@@ -33,6 +33,7 @@ struct hdr_cursor
 	void *pos;
 };
 
+
 /* Service map */
 struct
 {
@@ -43,15 +44,14 @@ struct
 } svc_port_map SEC(".maps");
 
 
-
 /* Ringbuf output map */
-struct
-{
-	__uint(type, BPF_MAP_TYPE_RIN);
-	__uint(key_size, 0);
-	__uint(value_size, 0)
-	__uint(max_entries, 4096);
-} rx_packet_msg SEC(".maps");
+// struct
+// {
+// 	__uint(type, BPF_MAP_TYPE_RINGBUF);
+// 	__uint(key_size, 0);
+// 	__uint(value_size, 0);
+// 	__uint(max_entries, 4096);
+// } rx_packet_msg SEC(".maps");
 
 
 
@@ -92,7 +92,7 @@ static __always_inline int parse_iphdr(struct hdr_cursor *nh,
 	return ip->protocol;
 }
 
-static __always_inline int parse_ip6hdr(struct hdr_cursor *nh,
+static __always_inline int parse_ipv6hdr(struct hdr_cursor *nh,
 										void *data_end,
 										struct ipv6hdr **ipv6hdr)
 {
@@ -161,7 +161,7 @@ static __always_inline int parse_tcphdr(struct hdr_cursor *nh,
 
 static __always_inline int parse_udphdr(struct hdr_cursor *nh,
 										void *data_end,
-										struct udphdr **udp)
+										struct udphdr **udphdr)
 {
 	struct udphdr *udp = nh->pos;
 	int hdrsize = sizeof(*udp);
@@ -214,12 +214,12 @@ int xdp_packet_inspect(struct xdp_md *ctx){
 
 
 	// Parsing ICMP/ICMP6
-	if (nh_type == IPRPOTO_ICMP)
+	if (nh_type == IPPROTO_ICMP)
 	{
 		nh_type = parse_icmphdr(&nh, data_end, &icmph);
 		if(bpf_ntohs(icmp->un.echo.sequence)&1) return XDP_DROP;
 	}
-	else if (nh_type == IPPROTO_ICMP6)
+	else if (nh_type == IPPROTO_ICMPV6)
 	{
 		nh_type = parse_icmp6hdr(&nh, data_end, &icmp6h);
 		if(bpf_ntohs(icmp6->icmp6_dataun.u_echo.sequence)&1) return XDP_DROP;
@@ -234,13 +234,6 @@ int xdp_packet_inspect(struct xdp_md *ctx){
 		
 		if(rec) {
 			lock_xadd(&(rec->count), 1);
-
-			struct datarec pkt_event;
-			pkt_event.port = nh_type;
-			pkt_event.count = rec->count;
-			bpf_probe_read_str(pkt_event.svc_name, sizeof(pkt_event.svc_name), rec->svc_name);
-
-			bpf_ringbuf_output(&rx_packet_msg, &pkt_event, sizeof(pkt_event), 0);
 		}
 
 		
@@ -252,13 +245,6 @@ int xdp_packet_inspect(struct xdp_md *ctx){
 		
 		if(rec) {
 			lock_xadd(&(rec->count), 1);
-
-			struct datarec pkt_event;
-			pkt_event.port = nh_type;
-			pkt_event.count = rec->count;
-			bpf_probe_read_str(pkt_event.svc_name, sizeof(pkt_event.svc_name), rec->svc_name);
-		
-			bpf_ringbuf_output(&rx_packet_msg, &pkt_event, sizeof(pkt_event), 0);
 		}
 
 	}
