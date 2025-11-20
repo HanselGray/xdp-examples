@@ -9,13 +9,13 @@
 /* This is the data record stored in the map */
 struct datarec {
     __u16 port;
-	char[12] svc_name;
+	char svc_name[16];
 	__u32 count;
 };
 
 struct svc_rec_t
 {
-	char[12] svc_name;
+	char svc_name[16];
 	__u32 count;
 };
 

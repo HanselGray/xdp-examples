@@ -217,12 +217,12 @@ int xdp_packet_inspect(struct xdp_md *ctx){
 	if (nh_type == IPPROTO_ICMP)
 	{
 		nh_type = parse_icmphdr(&nh, data_end, &icmph);
-		if(bpf_ntohs(icmp->un.echo.sequence)&1) return XDP_DROP;
+		if(bpf_ntohs(icmph->un.echo.sequence)&1) return XDP_DROP;
 	}
 	else if (nh_type == IPPROTO_ICMPV6)
 	{
 		nh_type = parse_icmp6hdr(&nh, data_end, &icmp6h);
-		if(bpf_ntohs(icmp6->icmp6_dataun.u_echo.sequence)&1) return XDP_DROP;
+		if(bpf_ntohs(icmp6h->icmp6_dataun.u_echo.sequence)&1) return XDP_DROP;
 	}
 
 
