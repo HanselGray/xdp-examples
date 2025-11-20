@@ -1,4 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0 
+
+	Description: This simple program will every other icmp packets on ingress, 
+	and forwarded other packets up to the upper layer in the kernel. It will also
+	record the number of packet that arrived on each port, which is mapped to a service name.
+*/
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
@@ -11,26 +16,7 @@
 #include <linux/in6.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-
-/* Header cursor to keep track of current parsing position */
-struct hdr_cursor
-{
-	void *pos;
-};
-
-struct svc_rec
-{
-	char[16] svc_name;
-	int count;
-};
-
-struct
-{
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__type(key, short);
-	__type(value, struct svc_rec);
-	__uint(max_entries, 65536);
-} svc_port_map SEC(".maps");
+#include "xdp_stats_kern_user.h"
 
 /* LLVM maps __sync_fetch_and_add() as a built-in function to the BPF atomic add
  * instruction (that is BPF_STX | BPF_XADD | BPF_W for word sizes)
@@ -39,7 +25,34 @@ struct
 #define lock_xadd(ptr, val) ((void)__sync_fetch_and_add(ptr, val))
 #endif
 
-// Parsing helpers 
+
+
+/* Header cursor to keep track of current parsing position */
+struct hdr_cursor
+{
+	void *pos;
+};
+
+/* Service map */
+struct
+{
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, struct svc_rec_t);
+	__uint(max_entries, 65536);
+} svc_port_map SEC(".maps");
+
+
+
+/* Ringbuf output map */
+struct
+{
+	__uint(type, BPF_MAP_TYPE_RIN);
+	__uint(key_size, 0);
+	__uint(value_size, 0)
+	__uint(max_entries, 4096);
+} rx_packet_msg SEC(".maps");
+
 
 
 /* Ethernet header parser */
@@ -165,67 +178,92 @@ static __always_inline int parse_udphdr(struct hdr_cursor *nh,
 
 /* Packet Parsing */
 SEC("xdp")
-int xdp_packet_inspect(struct xdp_md *ctx)
-{
+int xdp_packet_inspect(struct xdp_md *ctx){
 	void *data = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
 
-	bool is_icmp = false;
-
-	struct ethhdr *eth;
-	struct iphdr *iphdr;
-	struct ipv6hdr *ipv6hdr;
-	struct icmphdr *icmphdr;
-	struct icmp6hdr *icmp6hdr;
-	struct tcphdr *tcphdr;
-	struct udphdr *udphdr;
+	struct ethhdr *ethh;
+	struct iphdr *iph;
+	struct ipv6hdr *ipv6h;
+	struct icmphdr *icmph;
+	struct icmp6hdr *icmp6h;
+	struct tcphdr *tcph;
+	struct udphdr *udph;
+	
 
 	// Tracking next header and next header type
 	struct hdr_cursor nh;
 	int nh_type;
-
 	// Start pointer
 	nh.pos = data;
 
+
 	// Parsing eth header
-	nh_type = parse_ethhdr(&nh, data_end, &eth);
+	nh_type = parse_ethhdr(&nh, data_end, &ethh);
+
 
 	// Parsing ip/ipv6 header
 	if (nh_type == bpf_htons(ETH_P_IP))
 	{
-		nh_type = parse_iphdr(&nh, data_end, &iphdr);
+		nh_type = parse_iphdr(&nh, data_end, &iph);
 	}
 	else if (nh_type == bpf_htons(ETH_P_IPV6))
 	{
-		nh_type = parse_ipv6hdr(&nh, data_end, &ipv6hdr);
+		nh_type = parse_ipv6hdr(&nh, data_end, &ipv6h);
 	}
 
-	// Parsing ICMP/TCP/UDP header
+
+	// Parsing ICMP/ICMP6
 	if (nh_type == IPRPOTO_ICMP)
 	{
-		nh_type = parse_icmphdr(&nh, data_end, &icmphdr);
-		is_icmp = true;
+		nh_type = parse_icmphdr(&nh, data_end, &icmph);
+		if(bpf_ntohs(icmp->un.echo.sequence)&1) return XDP_DROP;
 	}
 	else if (nh_type == IPPROTO_ICMP6)
 	{
-		nh_type = parse_icmp6hdr(&nh, data_end, &icmp6hdr);
-		is_icmp = true;
+		nh_type = parse_icmp6hdr(&nh, data_end, &icmp6h);
+		if(bpf_ntohs(icmp6->icmp6_dataun.u_echo.sequence)&1) return XDP_DROP;
 	}
-	else if (nh_type == IPPROTO_TCP)
+
+
+	// Parsing TCP/UDP header and record into map
+	if (nh_type == IPPROTO_TCP)
 	{
-		nh_type = parse_tcphdr(&nh, data_end, &tcphdr);
+		nh_type = parse_tcphdr(&nh, data_end, &tcph);
+		struct svc_rec_t *rec = bpf_map_lookup_elem(&svc_port_map, &nh_type);
+		
+		if(rec) {
+			lock_xadd(&(rec->count), 1);
+
+			struct datarec pkt_event;
+			pkt_event.port = nh_type;
+			pkt_event.count = rec->count;
+			bpf_probe_read_str(pkt_event.svc_name, sizeof(pkt_event.svc_name), rec->svc_name);
+
+			bpf_ringbuf_output(&rx_packet_msg, &pkt_event, sizeof(pkt_event), 0);
+		}
+
+		
 	}
 	else if (nh_type == IPPROTO_UDP)
 	{
-		nh_type = parse_udphdr(&nh, data_end, &udphdr);
+		nh_type = parse_udphdr(&nh, data_end, &udph);
+		struct svc_rec_t *rec = bpf_map_lookup_elem(&svc_port_map, &nh_type);
+		
+		if(rec) {
+			lock_xadd(&(rec->count), 1);
+
+			struct datarec pkt_event;
+			pkt_event.port = nh_type;
+			pkt_event.count = rec->count;
+			bpf_probe_read_str(pkt_event.svc_name, sizeof(pkt_event.svc_name), rec->svc_name);
+		
+			bpf_ringbuf_output(&rx_packet_msg, &pkt_event, sizeof(pkt_event), 0);
+		}
+
 	}
 
-	// Record information into a map
-	if(!is_icmp) {
-		struct svc_rec *rec;
-	rec = bpf_map_lookup_elem(&svc_port_map, &key);
-	}
-	
+
 	return XDP_PASS;
 }
 
