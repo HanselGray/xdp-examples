@@ -1,22 +1,15 @@
-/* SPDX-License-Identifier: GPL-2.0 
-
-	Description: This simple program will every other icmp packets on ingress, 
-	and forwarded other packets up to the upper layer in the kernel. It will also
-	record the number of packet that arrived on each port, which is mapped to a service name.
+/* SPDX-License-Identifier: (GPL-2.0-or-later OR BSD-2-clause) */
+/*
+ *	Description: This simple program will every other icmp packets on ingress, 
+ *	record the number of packet that arrived on each port, which is mapped to a service name.
 */
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
-#include <linux/if_ether.h>
-#include <linux/ip.h>
-#include <linux/ipv6.h>
-#include <linux/icmp.h>
-#include <linux/icmpv6.h>
-#include <linux/in.h>
-#include <linux/in6.h>
-#include <linux/tcp.h>
-#include <linux/udp.h>
 #include "xdp_stats_kern_user.h"
+#include "packet_parser.h"
+
+
 
 /* LLVM maps __sync_fetch_and_add() as a built-in function to the BPF atomic add
  * instruction (that is BPF_STX | BPF_XADD | BPF_W for word sizes)
@@ -25,13 +18,6 @@
 #define lock_xadd(ptr, val) ((void)__sync_fetch_and_add(ptr, val))
 #endif
 
-
-
-/* Header cursor to keep track of current parsing position */
-struct hdr_cursor
-{
-	void *pos;
-};
 
 
 /* Service map */
@@ -53,128 +39,6 @@ struct
 // 	__uint(max_entries, 4096);
 // } rx_packet_msg SEC(".maps");
 
-
-
-/* Ethernet header parser */
-static __always_inline int parse_ethhdr(struct hdr_cursor *nh,
-										void *data_end,
-										struct ethhdr **ethhdr)
-{
-	struct ethhdr *eth = nh->pos;
-	int hdrsize = sizeof(*eth);
-
-	/* Byte-count bounds check; check if current pointer + size of header
-	 * is after data_end.
-	 */
-	if (nh->pos + hdrsize > data_end)
-		return -1;
-
-	nh->pos += hdrsize;
-	*ethhdr = eth;
-
-	return eth->h_proto; /* network-byte-order */
-}
-
-/* IP and IP_6 header parser*/
-static __always_inline int parse_iphdr(struct hdr_cursor *nh,
-									   void *data_end,
-									   struct iphdr **iphdr)
-{
-	struct iphdr *ip = nh->pos;
-	int hdrsize = sizeof(*ip);
-
-	if (nh->pos + hdrsize > data_end)
-		return -1;
-
-	nh->pos += hdrsize;
-	*iphdr = ip;
-
-	return ip->protocol;
-}
-
-static __always_inline int parse_ipv6hdr(struct hdr_cursor *nh,
-										void *data_end,
-										struct ipv6hdr **ipv6hdr)
-{
-	struct ipv6hdr *ipv6 = nh->pos;
-	int hdrsize = sizeof(*ipv6);
-
-	if (nh->pos + hdrsize > data_end)
-		return -1;
-
-	nh->pos += hdrsize;
-	*ipv6hdr = ipv6;
-
-	return ipv6->nexthdr;
-}
-
-/* ICMP and ICMP_6 parser */
-static __always_inline int parse_icmphdr(struct hdr_cursor *nh,
-										 void *data_end,
-										 struct icmphdr **icmphdr)
-{
-	struct icmphdr *icmp = nh->pos;
-	int hdrsize = sizeof(*icmp);
-
-	if (nh->pos + hdrsize > data_end)
-		return -1;
-
-	nh->pos += hdrsize;
-	*icmphdr = icmp;
-
-	return icmp->type;
-}
-
-static __always_inline int parse_icmp6hdr(struct hdr_cursor *nh,
-										  void *data_end,
-										  struct icmp6hdr **icmp6hdr)
-{
-	struct icmp6hdr *icmp6 = nh->pos;
-	int hdrsize = sizeof(*icmp6);
-
-	if (nh->pos + hdrsize > data_end)
-		return -1;
-
-	nh->pos += hdrsize;
-	*icmp6hdr = icmp6;
-
-	return icmp6->icmp6_type;
-}
-
-/* TCP and UDP parser */
-static __always_inline int parse_tcphdr(struct hdr_cursor *nh,
-										void *data_end,
-										struct tcphdr **tcphdr)
-{
-	struct tcphdr *tcp = nh->pos;
-	int hdrsize = sizeof(*tcp);
-
-	if (nh->pos + hdrsize > data_end)
-		return -1;
-
-	nh->pos += hdrsize;
-
-	*tcphdr = tcp;
-
-	return tcp->dest;
-}
-
-static __always_inline int parse_udphdr(struct hdr_cursor *nh,
-										void *data_end,
-										struct udphdr **udphdr)
-{
-	struct udphdr *udp = nh->pos;
-	int hdrsize = sizeof(*udp);
-
-	if (nh->pos + hdrsize > data_end)
-		return -1;
-
-	nh->pos += hdrsize;
-
-	*udphdr = udp;
-
-	return udp->dest;
-}
 
 /* Packet Parsing */
 SEC("xdp")
@@ -253,4 +117,4 @@ int xdp_packet_inspect(struct xdp_md *ctx){
 	return XDP_PASS;
 }
 
-char _license[] SEC("license") = "GPL-2.0";
+char _license[] SEC("license") = "GPL";
